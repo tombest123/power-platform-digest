@@ -24,7 +24,6 @@ ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 GMAIL_ADDRESS      = os.environ["GMAIL_ADDRESS"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 
-# Work out the lookback window label for the prompt
 DAY_OF_WEEK = datetime.utcnow().weekday()  # 0=Mon, 2=Wed, 4=Fri
 if DAY_OF_WEEK == 0:
     LOOKBACK = "Friday, Saturday, and Sunday (the past weekend)"
@@ -33,50 +32,74 @@ elif DAY_OF_WEEK == 2:
 else:
     LOOKBACK = "Wednesday and Thursday"
 
-SYSTEM_PROMPT = f"""You are a Power Platform news analyst. Search the web for the latest Power Platform news and learning materials published since {LOOKBACK}.
+# Microsoft Learn release plan URLs (updated weekly by Microsoft, scrapable)
+RELEASE_URLS = [
+    "https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-apps/planned-features",
+    "https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/microsoft-copilot-studio/planned-features",
+    "https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-automate/planned-features",
+    "https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/data-platform/planned-features",
+    "https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-platform-governance-administration/planned-features",
+]
 
-PRIORITY TOPICS (always surface these first, include the most items here):
+SYSTEM_PROMPT = f"""You are a Power Platform news analyst. Your job has two parts this run.
+
+PART 1 — NEWS DIGEST
+Search the web for Power Platform news published since {LOOKBACK}.
+
+PRIORITY TOPICS (surface these first, most items here):
 1. Copilot Studio and AI agents
 2. Canvas Apps and Model-driven Apps
 3. Power Automate
 4. Dataverse
 5. Security and governance
 
-STANDARD TOPICS (include if there is notable news, below priority content):
-- Power BI
-- Power Pages
-- Events and community
+STANDARD TOPICS (include if notable, below priority content):
+- Power BI, Power Pages, Events, LinkedIn/community
 
-ADDITIONAL SOURCES TO CHECK:
-- LinkedIn posts from Microsoft Power Platform MVPs and the official Microsoft Power Platform LinkedIn page
-- Microsoft Learn release notes and documentation updates
-- Microsoft Power Platform blog (powerplatform.microsoft.com/blog)
-- Community forums and YouTube demos
+PART 2 — RELEASE TRACKER
+Check these Microsoft Learn release plan pages for any features that have NEWLY moved to
+"Public Preview" or "General Availability" since {LOOKBACK}. Look for features with a
+release date or checkmark indicating they just became available:
+- Power Apps: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-apps/planned-features
+- Copilot Studio: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/microsoft-copilot-studio/planned-features
+- Power Automate: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-automate/planned-features
+- Dataverse: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/data-platform/planned-features
+- Governance & Admin: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-platform-governance-administration/planned-features
+
+If no features have newly reached Preview or GA since {LOOKBACK}, set releases to an empty array [].
 
 CRITICAL INSTRUCTIONS:
 - Your ENTIRE response must be a single valid JSON object. Nothing before it, nothing after it.
 - No intro text, no explanations, no markdown, no backticks, no commentary whatsoever.
 - Start your response with {{ and end with }}
-- Only include news and content published since {LOOKBACK} — do not go further back.
 
 JSON structure (return exactly this shape):
 {{
   "date": "YYYY-MM-DD",
   "lookback": "{LOOKBACK}",
-  "summary": "2-3 sentence executive summary focused on the priority topics",
+  "summary": "2-3 sentence executive summary focused on priority topics",
   "top_pick": {{
-    "title": "headline of the single most important story — bias strongly toward priority topics",
-    "detail": "2-3 sentences on why this is the top story, considering recency, practitioner impact, and breadth of coverage",
+    "title": "headline of the single most important story — bias toward priority topics",
+    "detail": "2-3 sentences on why this is the top story",
     "category": "category name",
     "source": "source name",
     "url": "https://... or empty string"
   }},
+  "releases": [
+    {{
+      "product": "Power Apps|Copilot Studio|Power Automate|Dataverse|Governance & Admin",
+      "title": "feature name from the release plan",
+      "status": "Public Preview|General Availability",
+      "detail": "1-2 sentences describing what this feature does and why it matters",
+      "url": "https://learn.microsoft.com/... direct link to the release plan page"
+    }}
+  ],
   "items": [
     {{
       "category": "Copilot Studio & Agents|Canvas & Model-driven Apps|Power Automate|Dataverse|Security & Governance|Power BI|Power Pages|Events|LinkedIn|General",
       "title": "short headline",
-      "detail": "2-3 sentences describing the update and why it matters to practitioners",
-      "source": "source name — for LinkedIn include the person or page name",
+      "detail": "2-3 sentences describing the update and why it matters",
+      "source": "source name",
       "url": "https://... or empty string",
       "importance": "high|medium|low",
       "is_priority": true or false
@@ -85,7 +108,7 @@ JSON structure (return exactly this shape):
   "learning": [
     {{
       "title": "title of the learning resource",
-      "detail": "1-2 sentences on what you will learn and why it is relevant to this week's news",
+      "detail": "1-2 sentences on what you will learn and why it is relevant this week",
       "format": "Blog|Video|Docs|Community|Course",
       "source": "source name",
       "url": "https://... or empty string",
@@ -94,11 +117,11 @@ JSON structure (return exactly this shape):
   ]
 }}
 
-Return 8-14 news items total. Priority categories first, then standard. Include 3-5 learning resources directly tied to the week's top stories. Flag is_priority as true for priority category items."""
+Return 8-14 news items. Include 3-5 learning resources. Releases array may be empty if nothing new — that is fine and expected."""
 
 
 def fetch_digest() -> dict:
-    logging.info("Fetching Power Platform digest from Claude (lookback: %s)...", LOOKBACK)
+    logging.info("Fetching Power Platform digest (lookback: %s)...", LOOKBACK)
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     response = client.messages.create(
@@ -106,7 +129,7 @@ def fetch_digest() -> dict:
         max_tokens=4000,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": f"Fetch the Power Platform digest covering news since {LOOKBACK}."}],
+        messages=[{"role": "user", "content": f"Fetch the Power Platform digest and release tracker covering news since {LOOKBACK}."}],
     )
 
     all_text = " ".join(
@@ -142,6 +165,17 @@ def build_html_email(digest: dict) -> str:
         "LinkedIn": "#378ADD",
         "General": "#888780",
     }
+    product_colors = {
+        "Power Apps": "#378ADD",
+        "Copilot Studio": "#7F77DD",
+        "Power Automate": "#1D9E75",
+        "Dataverse": "#639922",
+        "Governance & Admin": "#E24B4A",
+    }
+    status_colors = {
+        "General Availability": {"bg": "#E1F5EE", "text": "#085041"},
+        "Public Preview":       {"bg": "#EEEDFE", "text": "#3C3489"},
+    }
     imp_colors = {"high": "#E24B4A", "medium": "#EF9F27", "low": "#888780"}
     format_icons = {"Blog": "✍️", "Video": "▶️", "Docs": "📄", "Community": "💬", "Course": "🎓"}
 
@@ -149,10 +183,10 @@ def build_html_email(digest: dict) -> str:
     lookback  = digest.get("lookback", "the past few days")
     summary   = digest.get("summary", "")
     top_pick  = digest.get("top_pick", {})
+    releases  = digest.get("releases", [])
     items     = digest.get("items", [])
     learning  = digest.get("learning", [])
 
-    # Split items into priority and standard
     priority_items = [i for i in items if i.get("is_priority")]
     standard_items = [i for i in items if not i.get("is_priority")]
 
@@ -166,21 +200,14 @@ def build_html_email(digest: dict) -> str:
             is_urgent = "ACTION REQUIRED" in item.get("title", "").upper()
             border = "#E24B4A" if is_urgent else "#e5e5e5"
             url_html = f'<a href="{item["url"]}" style="color:#378ADD;font-size:12px;text-decoration:none;">Read more ↗</a>' if item.get("url") else ""
-
             if cat != current_cat:
                 current_cat = cat
                 priority_badge = '<span style="background:#EEEDFE;color:#3C3489;font-size:10px;font-weight:600;padding:1px 6px;border-radius:99px;margin-left:6px;">priority</span>' if cat in priority_cats else ""
-                html += f"""
-                <div style="display:flex;align-items:center;gap:6px;margin:20px 0 8px;">
-                  <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{color};"></span>
-                  <span style="font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.06em;">{cat}</span>
-                  {priority_badge}
-                </div>"""
-
+                html += f'<div style="display:flex;align-items:center;gap:6px;margin:20px 0 8px;"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{color};"></span><span style="font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.06em;">{cat}</span>{priority_badge}</div>'
             html += f"""
             <div style="border:1px solid {border};border-radius:10px;padding:14px 16px;margin-bottom:8px;">
               <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-                <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{imp_color};flex-shrink:0;"></span>
+                <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{imp_color};"></span>
                 <span style="font-size:11px;color:#888;">{item.get("source","")}</span>
               </div>
               <p style="margin:0 0 6px;font-size:14px;font-weight:600;color:{"#A32D2D" if is_urgent else "#111"};">{item.get("title","")}</p>
@@ -189,40 +216,62 @@ def build_html_email(digest: dict) -> str:
             </div>"""
         return html
 
+    # Releases section
+    if releases:
+        releases_html = ""
+        for r in releases:
+            product = r.get("product", "")
+            status  = r.get("status", "")
+            p_color = product_colors.get(product, "#888780")
+            s_style = status_colors.get(status, {"bg": "#F1EFE8", "text": "#444441"})
+            url_html = f'<a href="{r["url"]}" style="color:#378ADD;font-size:12px;text-decoration:none;">View in release plan ↗</a>' if r.get("url") else ""
+            releases_html += f"""
+            <div style="border:1px solid #e5e5e5;border-radius:10px;padding:12px 16px;margin-bottom:8px;">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
+                <span style="background:{p_color}22;color:{p_color};font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;">{product}</span>
+                <span style="background:{s_style["bg"]};color:{s_style["text"]};font-size:10px;font-weight:600;padding:2px 8px;border-radius:99px;">{status}</span>
+              </div>
+              <p style="margin:0 0 5px;font-size:14px;font-weight:600;color:#111;">{r.get("title","")}</p>
+              <p style="margin:0 0 8px;font-size:13px;color:#555;line-height:1.6;">{r.get("detail","")}</p>
+              {url_html}
+            </div>"""
+    else:
+        releases_html = '<div style="border:1px solid #e5e5e5;border-radius:10px;padding:14px 16px;color:#888;font-size:13px;">No new features moved to Public Preview or General Availability since ' + lookback + '. Check back next time!</div>'
+
     # Learning section
     learning_html = ""
-    for resource in learning:
-        fmt = resource.get("format", "Blog")
+    for r in learning:
+        fmt  = r.get("format", "Blog")
         icon = format_icons.get(fmt, "📎")
-        url_html = f'<a href="{resource["url"]}" style="color:#378ADD;font-size:12px;text-decoration:none;">Open resource ↗</a>' if resource.get("url") else ""
+        url_html = f'<a href="{r["url"]}" style="color:#378ADD;font-size:12px;text-decoration:none;">Open resource ↗</a>' if r.get("url") else ""
         learning_html += f"""
         <div style="border:1px solid #e5e5e5;border-radius:10px;padding:12px 16px;margin-bottom:8px;display:flex;gap:12px;align-items:flex-start;">
           <span style="font-size:18px;flex-shrink:0;">{icon}</span>
           <div>
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
               <span style="background:#E6F1FB;color:#0C447C;font-size:10px;font-weight:600;padding:1px 6px;border-radius:99px;">{fmt}</span>
-              <span style="font-size:11px;color:#888;">{resource.get("source","")}</span>
+              <span style="font-size:11px;color:#888;">{r.get("source","")}</span>
             </div>
-            <p style="margin:0 0 4px;font-size:13px;font-weight:600;color:#111;">{resource.get("title","")}</p>
-            <p style="margin:0 0 6px;font-size:12px;color:#555;line-height:1.5;">{resource.get("detail","")}</p>
-            <p style="margin:0 0 6px;font-size:11px;color:#888;">Related to: {resource.get("related_to","")}</p>
+            <p style="margin:0 0 4px;font-size:13px;font-weight:600;color:#111;">{r.get("title","")}</p>
+            <p style="margin:0 0 5px;font-size:12px;color:#555;line-height:1.5;">{r.get("detail","")}</p>
+            <p style="margin:0 0 6px;font-size:11px;color:#aaa;">Related to: {r.get("related_to","")}</p>
             {url_html}
           </div>
         </div>"""
 
     # Top pick
-    top_pick_color = cat_colors.get(top_pick.get("category",""), "#7F77DD")
-    top_pick_url = f'<a href="{top_pick["url"]}" style="color:{top_pick_color};font-size:12px;text-decoration:none;">Read more ↗</a>' if top_pick.get("url") else ""
+    tp_color = cat_colors.get(top_pick.get("category", ""), "#7F77DD")
+    tp_url   = f'<a href="{top_pick["url"]}" style="color:{tp_color};font-size:12px;text-decoration:none;">Read more ↗</a>' if top_pick.get("url") else ""
     top_pick_html = f"""
-    <div style="border:2px solid {top_pick_color};border-radius:10px;padding:16px;margin-bottom:20px;">
+    <div style="border:2px solid {tp_color};border-radius:10px;padding:16px;margin-bottom:20px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
         <span style="font-size:13px;">⭐</span>
-        <span style="background:{top_pick_color}22;color:{top_pick_color};font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;">{top_pick.get("category","")}</span>
+        <span style="background:{tp_color}22;color:{tp_color};font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;">{top_pick.get("category","")}</span>
         <span style="font-size:11px;color:#888;">{top_pick.get("source","")}</span>
       </div>
       <p style="margin:0 0 6px;font-size:15px;font-weight:600;color:#111;">{top_pick.get("title","")}</p>
       <p style="margin:0 0 10px;font-size:13px;color:#555;line-height:1.6;">{top_pick.get("detail","")}</p>
-      {top_pick_url}
+      {tp_url}
     </div>"""
 
     divider = '<div style="border-top:1px solid #e5e5e5;margin:20px 0 16px;"><p style="font-size:11px;color:#bbb;text-transform:uppercase;letter-spacing:.06em;margin:8px 0 0;">Other updates</p></div>' if standard_items else ""
@@ -233,15 +282,19 @@ def build_html_email(digest: dict) -> str:
 
   <h2 style="font-size:20px;font-weight:600;margin:0 0 2px;">⚡ Power Platform digest</h2>
   <p style="font-size:13px;color:#888;margin:0 0 4px;">{date_str} · Covering news since {lookback}</p>
-  <p style="font-size:11px;color:#bbb;margin:0 0 20px;">Priority focus: Copilot Studio · Agents · Canvas & Model-driven Apps · Power Automate · Dataverse · Security</p>
+  <p style="font-size:11px;color:#bbb;margin:0 0 20px;">Priority: Copilot Studio · Agents · Canvas & Model-driven · Power Automate · Dataverse · Security</p>
 
   <div style="background:#f7f7f7;border-radius:10px;padding:14px 16px;margin-bottom:20px;">
     <p style="font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px;">Summary</p>
     <p style="font-size:14px;line-height:1.7;margin:0;">{summary}</p>
   </div>
 
-  <p style="font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px;">⭐ Top pick of the day</p>
+  <p style="font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px;">⭐ Top pick</p>
   {top_pick_html}
+
+  <p style="font-size:11px;font-weight:600;color:#aaa;text-transform:uppercase;letter-spacing:.06em;margin:24px 0 10px;">🚀 Release tracker</p>
+  <p style="font-size:12px;color:#aaa;margin:0 0 12px;">Features newly reaching Public Preview or GA across Power Apps, Copilot Studio, Power Automate, Dataverse and Governance since {lookback}. Source: <a href="https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/" style="color:#378ADD;text-decoration:none;">Microsoft Learn release plan</a></p>
+  {releases_html}
 
   {render_items(priority_items)}
   {divider}
