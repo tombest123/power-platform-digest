@@ -1,11 +1,15 @@
-name: Power Platform Daily Digest
+
+name: Power Platform Digest (Mon/Wed/Fri)
 
 on:
   schedule:
-    # Runs at 08:00 UTC every day (that's 9:00 AM BST / 8:00 AM GMT)
-    - cron: '0 8 * * *'
+    # 8:00 AM UTC on Monday, Wednesday, Friday
+    # Mon = captures Fri/Sat/Sun news
+    # Wed = captures Mon/Tue news
+    # Fri = captures Wed/Thu news
+    - cron: '0 8 * * 1,3,5'
   workflow_dispatch:
-    # Allows you to trigger a manual run from the GitHub Actions tab anytime
+    # Manual trigger from the GitHub Actions tab anytime
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
