@@ -1,0 +1,31 @@
+name: Power Platform Daily Digest
+
+on:
+  schedule:
+    # Runs at 08:00 UTC every day (that's 9:00 AM BST / 8:00 AM GMT)
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    # Allows you to trigger a manual run from the GitHub Actions tab anytime
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Run digest and send email
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          GMAIL_ADDRESS:      ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python digest_runner.py
