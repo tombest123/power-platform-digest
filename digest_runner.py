@@ -43,8 +43,20 @@ RELEASE_URLS = [
 
 SYSTEM_PROMPT = f"""You are a Power Platform news analyst. Your job has two parts this run.
 
+TODAY'S DATE: {datetime.utcnow().strftime("%Y-%m-%d")}
+LOOKBACK PERIOD: {LOOKBACK}
+
+STRICT DATE RULE — THIS IS THE MOST IMPORTANT INSTRUCTION:
+Only include content that was PUBLISHED or UPDATED within the lookback period above.
+If you cannot confirm a publication date for an article or post, EXCLUDE it entirely.
+Do NOT include anything older than the lookback period — even if it is interesting or relevant.
+Fewer stories with confirmed recent dates is far better than more stories with uncertain or old dates.
+Before including any item, ask yourself: "Can I confirm this was published in the last 2-3 days?" If not, exclude it.
+
 PART 1 — NEWS DIGEST
 Search the web for Power Platform news published since {LOOKBACK}.
+When searching, use date filters where possible (e.g. "after:{datetime.utcnow().strftime("%Y-%m-%d")} Power Platform").
+Only include results where you can see a clear publication date within the lookback window.
 
 PRIORITY TOPICS (surface these first, most items here):
 1. Copilot Studio and AI agents
@@ -53,13 +65,13 @@ PRIORITY TOPICS (surface these first, most items here):
 4. Dataverse
 5. Security and governance
 
-STANDARD TOPICS (include if notable, below priority content):
+STANDARD TOPICS (include only if there is confirmed recent news, below priority content):
 - Power BI, Power Pages, Events, LinkedIn/community
 
 PART 2 — RELEASE TRACKER
 Check these Microsoft Learn release plan pages for any features that have NEWLY moved to
-"Public Preview" or "General Availability" since {LOOKBACK}. Look for features with a
-release date or checkmark indicating they just became available:
+"Public Preview" or "General Availability" since {LOOKBACK}. Only include features whose
+release date falls within the lookback period — not features planned for future months:
 - Power Apps: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-apps/planned-features
 - Copilot Studio: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/microsoft-copilot-studio/planned-features
 - Power Automate: https://learn.microsoft.com/en-us/power-platform/release-plan/2026wave1/power-automate/planned-features
@@ -102,13 +114,14 @@ JSON structure (return exactly this shape):
       "source": "source name",
       "url": "https://... or empty string",
       "importance": "high|medium|low",
-      "is_priority": true or false
+      "is_priority": true or false,
+      "published_date": "YYYY-MM-DD — the confirmed publication date of this article. If you cannot confirm the date, DO NOT include this item."
     }}
   ],
   "learning": [
     {{
       "title": "title of the learning resource",
-      "detail": "1-2 sentences on what you will learn and why it is relevant this week",
+      "detail": "1-2 sentences on what you will learn and why it is relevant to this week's topics",
       "format": "Blog|Video|Docs|Community|Course",
       "source": "source name",
       "url": "https://... or empty string",
@@ -117,7 +130,7 @@ JSON structure (return exactly this shape):
   ]
 }}
 
-Return 8-14 news items. Include 3-5 learning resources. Releases array may be empty if nothing new — that is fine and expected."""
+Return 3-8 news items (quality and recency over quantity). Include 3-5 learning resources — these can be from any time, not just the lookback period, as long as they are relevant to this week's topics. Releases array may be empty if nothing new — that is fine and expected."""
 
 
 def fetch_digest() -> dict:
@@ -126,7 +139,7 @@ def fetch_digest() -> dict:
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=4000,
+        max_tokens=8000,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": f"Fetch the Power Platform digest and release tracker covering news since {LOOKBACK}."}],
@@ -141,11 +154,64 @@ def fetch_digest() -> dict:
 
     logging.info("Response preview: %s", all_text[:300])
 
-    match = re.search(r'\{.*\}', all_text, re.DOTALL)
-    if not match:
-        raise ValueError(f"No JSON found in response: {all_text[:300]}")
+    # Find the outermost JSON object by locating the first { and matching closing }
+    # Handles Claude prepending intro text before the JSON
+    start = all_text.find('{')
+    if start == -1:
+        raise ValueError(f"No JSON object found in response: {all_text[:300]}")
 
-    return json.loads(match.group(0).strip())
+    # Walk forward to find the matching closing brace
+    depth = 0
+    end = -1
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(all_text[start:], start):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if end == -1:
+        raise ValueError("Could not find matching closing brace — response may be truncated.")
+
+    raw = all_text[start:end + 1]
+    logging.info("Extracted JSON length: %d chars", len(raw))
+    parsed = json.loads(raw)
+
+    # Defensive cleanup — strip news items with missing/unconfirmed published dates
+    # Learning resources are exempt (they can be from any time)
+    original_count = len(parsed.get("items", []))
+    parsed["items"] = [
+        item for item in parsed.get("items", [])
+        if item.get("published_date") and item["published_date"] not in ("", "unknown", "unconfirmed", "N/A", "n/a")
+    ]
+    filtered_count = len(parsed["items"])
+    if original_count != filtered_count:
+        logging.warning("Stripped %d items with missing/unconfirmed dates (%d remain)", original_count - filtered_count, filtered_count)
+
+    # Ensure required top-level keys exist with safe defaults
+    parsed.setdefault("releases", [])
+    parsed.setdefault("learning", [])
+    parsed.setdefault("summary", "No summary available.")
+    parsed.setdefault("top_pick", {})
+
+    logging.info("Final digest: %d news items, %d releases, %d learning resources",
+                 len(parsed["items"]), len(parsed["releases"]), len(parsed["learning"]))
+    return parsed
 
 
 def build_html_email(digest: dict) -> str:
